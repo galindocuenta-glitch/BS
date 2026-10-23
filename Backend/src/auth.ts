@@ -1,5 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 import jwt from 'jsonwebtoken'
+import type { RowDataPacket } from 'mysql2/promise'
+import { pool } from './db.js'
 
 export type UserRole = 'client' | 'admin'
 export interface AuthUser {
@@ -40,10 +42,23 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
   try {
     req.user = jwt.verify(token, jwtSecret()) as AuthUser
-    next()
   } catch {
     res.status(401).json({ error: 'La sesión no es válida o ha expirado.' })
+    return
   }
+  void pool.execute<(RowDataPacket & { active: number })[]>(
+    'SELECT active FROM users WHERE id = ? LIMIT 1',
+    [req.user!.id],
+  ).then(([rows]) => {
+    if (!rows[0]?.active) {
+      res.status(403).json({ error: 'La cuenta está deshabilitada o ya no existe.' })
+      return
+    }
+    next()
+  }).catch((error: unknown) => {
+    console.error('No fue posible validar el estado de la cuenta.', error)
+    res.status(500).json({ error: 'No fue posible validar la sesión.' })
+  })
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {

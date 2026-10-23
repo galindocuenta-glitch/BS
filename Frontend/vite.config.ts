@@ -30,9 +30,15 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
-      port: parseInt(process.env.PORT || '8444'),
+      host: '0.0.0.0',
+      port: 8444,
       strictPort: true,
+      proxy: {
+        '/api': {
+          target: process.env.API_PROXY_TARGET || 'http://127.0.0.1:4000',
+          changeOrigin: true,
+        },
+      },
       watch: {
         ignored: [
           '**/.figma/**',
@@ -40,8 +46,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     preview: {
-      host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
-      port: parseInt(process.env.PORT || '8444'),
+      host: '0.0.0.0',
+      port: 8444,
+      strictPort: true,
     },
   }
 })
