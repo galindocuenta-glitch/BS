@@ -32,6 +32,32 @@ import cockpitGripsImg from './assets/parts/cockpit/product-3.png'
 import cockpitSaddleImg from './assets/parts/cockpit/product-4.png'
 import { WHEEL_PHOTOS } from './parts-images'
 import { apiRequest, AUTH_TOKEN_KEY } from './api'
+import { downloadXlsx } from './xlsx'
+
+let cartAudioContext: AudioContext | null = null
+
+function playCartAddedSound(): void {
+  try {
+    cartAudioContext ??= new AudioContext()
+    const context = cartAudioContext
+    if (context.state === 'suspended') void context.resume()
+    const oscillator = context.createOscillator()
+    const volume = context.createGain()
+    const now = context.currentTime
+    oscillator.type = 'sine'
+    oscillator.frequency.setValueAtTime(660, now)
+    oscillator.frequency.setValueAtTime(880, now + 0.07)
+    volume.gain.setValueAtTime(0.0001, now)
+    volume.gain.exponentialRampToValueAtTime(0.08, now + 0.015)
+    volume.gain.exponentialRampToValueAtTime(0.0001, now + 0.18)
+    oscillator.connect(volume)
+    volume.connect(context.destination)
+    oscillator.start(now)
+    oscillator.stop(now + 0.19)
+  } catch (error) {
+    console.warn('No fue posible reproducir el sonido de confirmación del carrito.', error)
+  }
+}
 
 // ─── Gallery URLs (Unsplash) ─────────────────────────────────────────────────
 const U = (id: string) => `https://images.unsplash.com/photo-${id}?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=900`
@@ -112,6 +138,15 @@ interface PersistedOrder {
     billingEmail: string
     issuedAt: string
   }
+}
+
+interface CustomerOrder {
+  id: number
+  status: string
+  total: number
+  createdAt: string
+  invoiceNumber: string | null
+  items: { productId: number | null; name: string; unitPrice: number; quantity: number }[]
 }
 
 // ─── Data ────────────────────────────────────────────────────────────────────
@@ -1360,6 +1395,11 @@ function ServiceModal({
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [date, setDate] = useState('')
+  const [bike, setBike] = useState('')
+  const [serviceType, setServiceType] = useState('preventivo')
+  const [mileage, setMileage] = useState('')
+  const [mechanicalArea, setMechanicalArea] = useState('')
+  const [issueDetails, setIssueDetails] = useState('')
   const [submitted, setSubmitted] = useState(false)
 
   if (!service) return null
@@ -1422,6 +1462,56 @@ function ServiceModal({
                     className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A] transition-colors"
                   />
                 </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Bicicleta / modelo</label>
+                  <input value={bike} onChange={(e) => setBike(e.target.value)} required placeholder="Marca y modelo" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A] transition-colors" />
+                </div>
+                {service.title.toLowerCase().includes('mantenimiento') ? (
+                  <>
+                    <div>
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Tipo de mantenimiento</label>
+                      <select value={serviceType} onChange={(e) => setServiceType(e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A]">
+                        <option value="preventivo">Preventivo / revisión periódica</option>
+                        <option value="correctivo">Correctivo</option>
+                        <option value="ajuste">Ajuste general</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Kilometraje aproximado</label>
+                      <input type="number" min="0" value={mileage} onChange={(e) => setMileage(e.target.value)} placeholder="Ej. 1200 km" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A] transition-colors" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Última revisión (opcional)</label>
+                      <input type="date" value={issueDetails} onChange={(e) => setIssueDetails(e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A] transition-colors" />
+                    </div>
+                  </>
+                ) : service.title.toLowerCase().includes('reparación') ? (
+                  <>
+                    <div>
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Sistema o componente</label>
+                      <select value={mechanicalArea} onChange={(e) => setMechanicalArea(e.target.value)} required className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A]">
+                        <option value="">Selecciona un área</option>
+                        <option>Frenos</option>
+                        <option>Transmisión</option>
+                        <option>Ruedas y llantas</option>
+                        <option>Suspensión</option>
+                        <option>Cuadro / dirección</option>
+                        <option>Otro</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Describe la falla o trabajo requerido</label>
+                      <textarea value={issueDetails} onChange={(e) => setIssueDetails(e.target.value)} required minLength={10} maxLength={500} rows={3} placeholder="Cuéntanos qué problema presenta tu bicicleta" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A] transition-colors" />
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">
+                      {service.title.toLowerCase().includes('ensamble') ? 'Preferencias de armado y componentes' : 'Detalles para coordinar el servicio'}
+                    </label>
+                    <textarea value={issueDetails} onChange={(e) => setIssueDetails(e.target.value)} required minLength={5} maxLength={500} rows={3} placeholder={service.title.toLowerCase().includes('ensamble') ? 'Describe el uso y los componentes que prefieres' : 'Indica dirección, horario u observaciones'} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[#0D5C3A] transition-colors" />
+                  </div>
+                )}
                 <div>
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Fecha deseada</label>
                   <input
@@ -1891,6 +1981,7 @@ function CheckoutModal({
         token,
         body: {
           items: items.map((item) => ({ productId: item.id, quantity: item.qty })),
+          paymentMethod: 'cash',
           paymentPoint: efectivoPunto,
           shipping: {
             name: form.nombre.trim(),
@@ -2052,7 +2143,7 @@ function CheckoutModal({
                 <h3 className="font-black text-sm text-[#1A1A1A] uppercase tracking-wide">Selecciona tu método de pago</h3>
 
                 {/* Payment method tabs */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   {([
                     { id: 'efectivo', label: 'Efectivo', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 12h.01M18 12h.01"/></svg> },
                   ] as const).map(m => (
@@ -2157,12 +2248,54 @@ function CheckoutModal({
               const payLabel = `Efectivo · ${invoice.paymentPoint}`
 
               const handlePrint = () => window.print()
-              const handleDownload = () => {
+              const handleDownload = async () => {
                 const el = document.getElementById('factura-bs')
                 if (!el) return
-                const html = `<html><head><title>Factura ${invoice.number}</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#1a1a1a}h1,h2{font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-bottom:1px solid #eee;font-size:13px}th{text-align:left;color:#0D5C3A;font-size:11px;text-transform:uppercase}</style></head><body>${el.innerHTML}</body></html>`
-                const blob = new Blob([html], { type: 'text/html' })
-                const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Factura-${invoice.number}.html`; a.click()
+                try {
+                  const logoResponse = await fetch(logoImg)
+                  if (!logoResponse.ok) throw new Error('No se pudo cargar el logo de la tienda.')
+                  const logoBlob = await logoResponse.blob()
+                  const logoData = await new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader()
+                    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('No se pudo preparar el logo.'))
+                    reader.onerror = () => reject(reader.error ?? new Error('No se pudo leer el logo.'))
+                    reader.readAsDataURL(logoBlob)
+                  })
+                  const invoiceCopy = el.cloneNode(true) as HTMLElement
+                  const logo = invoiceCopy.querySelector('img')
+                  if (logo) {
+                    logo.src = logoData
+                    logo.style.width = '36px'
+                    logo.style.height = '36px'
+                    logo.style.objectFit = 'contain'
+                  }
+                  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Factura ${invoice.number}</title><style>body{font:14px Arial,sans-serif;max-width:800px;margin:32px auto;padding:24px;color:#1a1a1a;border:1px solid #e5e7eb;border-radius:16px}h1,h2{font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:10px 8px;border-bottom:1px solid #e5e7eb;font-size:13px}th{text-align:left;color:#0D5C3A;font-size:11px;text-transform:uppercase}.invoice-header{background:#0D5C3A!important;color:white!important;padding:20px;border-radius:12px}.invoice-header img{width:36px;height:36px;object-fit:contain}@media print{body{margin:0;border:0}}</style></head><body>${invoiceCopy.innerHTML}</body></html>`
+                  const blob = new Blob([html], { type: 'text/html' })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `Factura-${invoice.number}.html`
+                  a.click()
+                  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+                } catch (error) {
+                  window.alert(error instanceof Error ? error.message : 'No fue posible descargar la factura.')
+                }
+              }
+              const handleInvoiceExcel = () => {
+                downloadXlsx([
+                  ['Factura', invoice.number],
+                  ['Fecha', invoiceDate],
+                  ['Cliente', user.name],
+                  ['Correo', user.email],
+                  ['Método de pago', payLabel],
+                  [],
+                  ['Producto', 'Cantidad', 'Precio unitario (COP)', 'Subtotal (COP)'],
+                  ...savedOrder.items.map((item) => [item.name, item.quantity, item.unitPrice, item.unitPrice * item.quantity]),
+                  [],
+                  ['Subtotal', subtotal],
+                  ['IVA', iva],
+                  ['Total', totalConIva],
+                ], `Factura-${invoice.number}`)
               }
 
               return (
@@ -2181,7 +2314,7 @@ function CheckoutModal({
                   {/* Invoice */}
                   <div id="factura-bs" className="border border-gray-200 rounded-2xl overflow-hidden text-sm">
                     {/* Invoice header */}
-                    <div className="bg-[#0D5C3A] text-white px-5 py-4 flex items-center justify-between">
+                    <div className="invoice-header bg-[#0D5C3A] text-white px-5 py-4 flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <BSLogo size={36} dark />
                         <div>
@@ -2278,6 +2411,9 @@ function CheckoutModal({
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
                       Descargar
                     </button>
+                    <button onClick={handleInvoiceExcel} className="flex-1 border-2 border-[#0D5C3A] text-[#0D5C3A] font-bold py-3 rounded-full text-sm hover:bg-[#0D5C3A]/5 transition-colors">
+                      Excel
+                    </button>
                   </div>
 
                   <button
@@ -2318,12 +2454,77 @@ interface AuthUser {
   role: 'client' | 'admin'
 }
 
+function MyOrdersModal({ token, onClose }: { token: string; onClose: () => void }) {
+  const [orders, setOrders] = useState<CustomerOrder[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    void apiRequest<CustomerOrder[]>('/orders/mine', { token })
+      .then(setOrders)
+      .catch((requestError: unknown) => setError(requestError instanceof Error ? requestError.message : 'No fue posible cargar tus pedidos.'))
+      .finally(() => setLoading(false))
+  }, [token])
+
+  const statusLabels: Record<string, string> = {
+    pending: 'Pendiente',
+    processing: 'En proceso',
+    shipped: 'Enviado',
+    delivered: 'Entregado',
+    cancelled: 'Cancelado',
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/60 z-[110]" onClick={onClose} />
+      <div className="fixed inset-0 z-[111] flex items-center justify-center p-4">
+        <section className="bg-white w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl shadow-2xl p-6">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <p className="text-xs font-bold tracking-widest uppercase text-[#0D5C3A]">Cuenta</p>
+              <h2 className="text-xl font-black">Historial de pedidos</h2>
+            </div>
+            <button onClick={onClose} className="w-9 h-9 rounded-full bg-gray-100 text-gray-600" aria-label="Cerrar historial">×</button>
+          </div>
+          {loading && <p className="text-sm text-gray-500 py-8 text-center">Cargando pedidos…</p>}
+          {error && <p className="text-sm text-red-600 py-4">{error}</p>}
+          {!loading && !error && orders.length === 0 && <p className="text-sm text-gray-500 py-8 text-center">Aún no tienes pedidos.</p>}
+          <div className="space-y-3">
+            {orders.map((order) => (
+              <article key={order.id} className="border border-gray-200 rounded-xl p-4">
+                <div className="flex flex-wrap justify-between gap-2 items-center">
+                  <div>
+                    <p className="font-bold">Pedido #{order.id} · {order.invoiceNumber ?? 'Factura pendiente'}</p>
+                    <p className="text-xs text-gray-500">{new Date(order.createdAt).toLocaleDateString('es-CO')}</p>
+                  </div>
+                  <span className="rounded-full bg-[#0D5C3A]/10 text-[#0D5C3A] px-3 py-1 text-xs font-bold">{statusLabels[order.status] ?? order.status}</span>
+                </div>
+                <ul className="my-3 space-y-1 text-sm text-gray-600">
+                  {order.items.map((item, index) => (
+                    <li key={`${item.productId ?? 'item'}-${index}`} className="flex justify-between gap-3">
+                      <span>{item.name} × {item.quantity}</span>
+                      <span>${(item.unitPrice * item.quantity).toLocaleString('es-CO')}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-right font-black text-[#0D5C3A]">${Number(order.total).toLocaleString('es-CO')} COP</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    </>
+  )
+}
+
 function AuthModal({
   onClose,
   onLogin,
+  onOpenLegal,
 }: {
   onClose: () => void
   onLogin: (user: AuthUser, token: string) => void
+  onOpenLegal: (section: 'terminos' | 'privacidad') => void
 }) {
   const [tab, setTab] = useState<'login' | 'register'>('login')
   const [authView, setAuthView] = useState<'login' | 'register' | 'forgot' | 'forgot-sent'>('login')
@@ -2332,6 +2533,7 @@ function AuthModal({
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [confirmPwd, setConfirmPwd] = useState('')
+  const [termsAccepted, setTermsAccepted] = useState(false)
   const [forgotEmail, setForgotEmail] = useState('')
   const [error, setError] = useState('')
   const [shake, setShake] = useState(false)
@@ -2371,11 +2573,12 @@ function AuthModal({
     if (password !== confirmPwd) return fail('Las contraseñas no coinciden')
     if (password.length < 10) return fail('La contraseña debe tener al menos 10 caracteres')
     if (!email.includes('@')) return fail('Correo inválido')
+    if (!termsAccepted) return fail('Debes aceptar los términos y la política de privacidad')
     setSubmitting(true)
     try {
       const session = await apiRequest<{ user: AuthUser; token: string }>('/auth/register', {
         method: 'POST',
-        body: { name: name.trim(), email: email.trim(), password },
+        body: { name: name.trim(), email: email.trim(), password, termsAccepted },
       })
       onLogin(session.user, session.token)
     } catch (err) {
@@ -2559,7 +2762,7 @@ function AuthModal({
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Contraseña</label>
                   <div className="relative">
-                    <input className={inputCls + ' pr-10'} type={showPwd ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Mínimo 6 caracteres" />
+                    <input className={inputCls + ' pr-10'} type={showPwd ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Mínimo 10 caracteres" />
                     <button type="button" onClick={() => setShowPwd(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-[#0D5C3A] transition-colors" tabIndex={-1}>
                       {showPwd
                         ? <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24M1 1l22 22"/></svg>
@@ -2581,9 +2784,19 @@ function AuthModal({
                   </div>
                 </div>
 
+                <label className="flex items-start gap-2 text-xs text-gray-600 leading-relaxed">
+                  <input type="checkbox" required checked={termsAccepted} onChange={(e) => setTermsAccepted(e.target.checked)} className="mt-0.5 accent-[#0D5C3A]" />
+                  <span>
+                    Acepto la{' '}
+                    <button type="button" onClick={() => onOpenLegal('privacidad')} className="text-[#0D5C3A] underline">Política de Privacidad</button>
+                    {' '}y los{' '}
+                    <button type="button" onClick={() => onOpenLegal('terminos')} className="text-[#0D5C3A] underline">Términos y Condiciones</button>.
+                  </span>
+                </label>
+
                 {error && <p className="text-xs text-red-500 font-semibold">{error}</p>}
 
-                <button onClick={handleRegister} className="w-full bg-[#0D5C3A] hover:bg-[#1A8A5A] text-white font-black py-3 rounded-xl text-sm transition-colors">
+                <button onClick={handleRegister} disabled={!termsAccepted || submitting} className="w-full bg-[#0D5C3A] hover:bg-[#1A8A5A] disabled:opacity-50 disabled:cursor-not-allowed text-white font-black py-3 rounded-xl text-sm transition-colors">
                   Crear cuenta
                 </button>
                 <p className="text-center text-xs text-gray-400">
@@ -2767,40 +2980,34 @@ interface AdminProduct {
   id: number; name: string; category: string; price: number; stock: number; img: string; active: boolean
 }
 interface AdminUser {
-  id: number; name: string; email: string; role: 'admin' | 'editor'; createdAt: string
+  id: number; name: string; email: string; role: 'admin'; createdAt: string; active: boolean
 }
 interface AdminClient {
-  id: number; name: string; email: string; phone: string; orders: number; totalSpent: number; lastOrder: string
+  id: number; name: string; email: string; phone: string; orders: number; totalSpent: number; lastOrder: string | null; active: boolean
 }
 interface AdminOffer {
-  id: number; title: string; discount: number; code: string; validUntil: string; active: boolean
+  id: number; title: string; discount: number; code: string; validUntil: string | null; active: boolean
+}
+interface AdminReview {
+  id: number; productId: number; productName: string; rating: number; comment: string
+  approved: boolean; createdAt: string; author: string
 }
 
 const INIT_ADMIN_PRODUCTS: AdminProduct[] = ALL_PRODUCTS.map((p) => ({
   id: p.id, name: p.name, category: p.category, price: p.price, stock: p.stock, img: p.img, active: true,
 }))
 
-const INIT_USERS: AdminUser[] = [
-  { id: 1, name: 'Carlos Rodríguez', email: 'admin@bsbikestore.com', role: 'admin', createdAt: '2024-01-10' },
-  { id: 2, name: 'Valeria Torres', email: 'valeria@bsbikestore.com', role: 'editor', createdAt: '2024-03-22' },
-]
-
 const INIT_CLIENTS: AdminClient[] = [
-  { id: 1, name: 'Andrés Morales', email: 'andres@mail.com', phone: '311 234 5678', orders: 3, totalSpent: 4200000, lastOrder: '2026-09-10' },
-  { id: 2, name: 'Laura Jiménez', email: 'laura@mail.com', phone: '320 987 6543', orders: 1, totalSpent: 18900000, lastOrder: '2026-09-15' },
-  { id: 3, name: 'Diego Ospina', email: 'diego@mail.com', phone: '315 456 7890', orders: 5, totalSpent: 7600000, lastOrder: '2026-09-18' },
-  { id: 4, name: 'Sofía Vargas', email: 'sofia@mail.com', phone: '318 321 0987', orders: 2, totalSpent: 35400000, lastOrder: '2026-09-01' },
-]
-
-const INIT_OFFERS: AdminOffer[] = [
-  { id: 1, title: 'Temporada de MTB', discount: 15, code: 'MTB15', validUntil: '2026-10-31', active: true },
-  { id: 2, title: 'Lanzamiento Trek', discount: 10, code: 'TREK10', validUntil: '2026-09-30', active: true },
-  { id: 3, title: 'Black Friday', discount: 25, code: 'BF25', validUntil: '2026-11-29', active: false },
+  { id: 1, name: 'Andrés Morales', email: 'andres@mail.com', phone: '311 234 5678', orders: 3, totalSpent: 4200000, lastOrder: '2026-09-10', active: true },
+  { id: 2, name: 'Laura Jiménez', email: 'laura@mail.com', phone: '320 987 6543', orders: 1, totalSpent: 18900000, lastOrder: '2026-09-15', active: true },
+  { id: 3, name: 'Diego Ospina', email: 'diego@mail.com', phone: '315 456 7890', orders: 5, totalSpent: 7600000, lastOrder: '2026-09-18', active: true },
+  { id: 4, name: 'Sofía Vargas', email: 'sofia@mail.com', phone: '318 321 0987', orders: 2, totalSpent: 35400000, lastOrder: '2026-09-01', active: true },
 ]
 
 function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) {
   const [section, setSection] = useState<AdminSection>('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [adminDarkMode, setAdminDarkMode] = useState(false)
 
   // Products state
   const [adminProducts, setAdminProducts] = useState<AdminProduct[]>(INIT_ADMIN_PRODUCTS)
@@ -2814,34 +3021,49 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
           active: item.active,
         })))
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'No fue posible cargar los productos de administración.'))
   }, [token])
   const [showAddProduct, setShowAddProduct] = useState(false)
+  const [savingProduct, setSavingProduct] = useState(false)
   const [editProduct, setEditProduct] = useState<AdminProduct | null>(null)
   const [newProduct, setNewProduct] = useState({ name: '', category: 'Todo Terreno', price: '', stock: '', imgPreview: '' })
 
   // Users state
-  const [users, setUsers] = useState<AdminUser[]>(INIT_USERS)
+  const [users, setUsers] = useState<AdminUser[]>([])
   const [showAddUser, setShowAddUser] = useState(false)
-  const [newUser, setNewUser] = useState({ name: '', email: '', role: 'editor' as 'admin' | 'editor' })
+  const [newUser, setNewUser] = useState({ name: '', email: '', password: '' })
+  useEffect(() => {
+    void apiRequest<{ items: AdminUser[] }>('/admin/users', { token })
+      .then(({ items }) => setUsers(items))
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'No fue posible cargar los usuarios.'))
+  }, [token])
 
   // Clients state
   const [clients, setClients] = useState<AdminClient[]>(INIT_CLIENTS)
   const [clientSearch, setClientSearch] = useState('')
+  const [showAddClient, setShowAddClient] = useState(false)
+  const [newClient, setNewClient] = useState({ name: '', email: '', phone: '', password: '', termsAccepted: false })
+  useEffect(() => {
+    void apiRequest<{ items: AdminClient[] }>('/admin/clients', { token })
+      .then(({ items }) => setClients(items.map((client) => ({
+        ...client,
+        orders: Number(client.orders),
+        totalSpent: Number(client.totalSpent),
+        lastOrder: client.lastOrder ? new Date(client.lastOrder).toISOString().slice(0, 10) : null,
+      }))))
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'No fue posible cargar los clientes.'))
+  }, [token])
 
   // Offers state
-  const [offers, setOffers] = useState<AdminOffer[]>(INIT_OFFERS)
+  const [offers, setOffers] = useState<AdminOffer[]>([])
   const [showAddOffer, setShowAddOffer] = useState(false)
   const [newOffer, setNewOffer] = useState({ title: '', discount: '', code: '', validUntil: '' })
+  useEffect(() => {
+    void apiRequest<{ items: AdminOffer[] }>('/admin/offers', { token })
+      .then(({ items }) => setOffers(items))
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'No fue posible cargar las ofertas.'))
+  }, [token])
 
-  // Payment proofs state
-  type PaymentStatus = 'Pendiente' | 'Aprobado' | 'Rechazado'
-  const [paymentProofs, setPaymentProofs] = useState([
-    { id: 'BS-298401', client: 'Andrés Morales', amount: 18900000, method: 'Nequi/PSE', status: 'Pendiente' as PaymentStatus, date: '2026-09-18' },
-    { id: 'BS-315892', client: 'Sofía Vargas', amount: 24900000, method: 'Transferencia', status: 'Pendiente' as PaymentStatus, date: '2026-09-17' },
-    { id: 'BS-287453', client: 'Diego Ospina', amount: 12400000, method: 'Nequi/PSE', status: 'Aprobado' as PaymentStatus, date: '2026-09-15' },
-    { id: 'BS-301234', client: 'Laura Jiménez', amount: 19900000, method: 'Transferencia', status: 'Rechazado' as PaymentStatus, date: '2026-09-14' },
-  ])
   const [adminSectionKey, setAdminSectionKey] = useState(0)
   const [orders, setOrders] = useState<OrderRow[]>([])
   const [orderStatuses, setOrderStatuses] = useState<Record<string, string>>({})
@@ -2876,7 +3098,7 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
         setOrders(rows)
         setOrderStatuses(Object.fromEntries(rows.map((order) => [order.id, order.status])))
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'No fue posible cargar los pedidos.'))
   }, [token])
 
   // Quick sale (guest purchase)
@@ -2887,11 +3109,15 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
   type OrderRow = typeof MOCK_ORDERS[0] & { invoiceNumber?: string }
   const [editingOrder, setEditingOrder] = useState<OrderRow | null>(null)
   const [editOrderDraft, setEditOrderDraft] = useState<OrderRow | null>(null)
-  type ReviewStatus = 'Pendiente' | 'Aprobado' | 'Rechazado'
-  const [reviewStatuses, setReviewStatuses] = useState<Record<number, ReviewStatus>>(
-    Object.fromEntries(REVIEWS.map((_, i) => [i, 'Pendiente' as ReviewStatus]))
-  )
-  const [deletedReviews, setDeletedReviews] = useState<Set<number>>(new Set())
+  const [adminReviews, setAdminReviews] = useState<AdminReview[]>([])
+  useEffect(() => {
+    void Promise.all([
+      apiRequest<AdminReview[]>('/admin/reviews?approved=false', { token }),
+      apiRequest<AdminReview[]>('/admin/reviews?approved=true', { token }),
+    ])
+      .then(([pending, approved]) => setAdminReviews([...approved, ...pending]))
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'No fue posible cargar las reseñas.'))
+  }, [token])
 
   const navItems: { id: AdminSection; label: string; icon: React.ReactElement }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg> },
@@ -2919,14 +3145,20 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
   }
 
   const saveProduct = async () => {
-    if (!newProduct.name || !newProduct.price) return
+    const price = Number(newProduct.price)
+    const stock = Number(newProduct.stock || 0)
+    if (!newProduct.name.trim() || !Number.isInteger(price) || price <= 0 || !Number.isInteger(stock) || stock < 0) {
+      window.alert('Ingresa un nombre, un precio entero mayor que cero y un inventario válido.')
+      return
+    }
     const payload = {
       name: newProduct.name.trim(),
       category: newProduct.category,
-      price: Number(newProduct.price),
-      stock: Number(newProduct.stock || 0),
+      price,
+      stock,
       ...(newProduct.imgPreview ? { imageUrl: newProduct.imgPreview } : {}),
     }
+    setSavingProduct(true)
     try {
       if (editProduct) {
         await apiRequest(`/products/${editProduct.id}`, { method: 'PATCH', token, body: payload })
@@ -2954,6 +3186,8 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
       setNewProduct({ name: '', category: 'Todo Terreno', price: '', stock: '', imgPreview: '' })
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'No fue posible guardar el producto.')
+    } finally {
+      setSavingProduct(false)
     }
   }
 
@@ -2963,16 +3197,6 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
       setAdminProducts((prev) => prev.map((product) => product.id === id ? { ...product, active } : product))
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'No fue posible actualizar el producto.')
-    }
-  }
-
-  const deleteProduct = async (id: number) => {
-    if (!window.confirm('¿Eliminar este producto del catálogo?')) return
-    try {
-      await apiRequest(`/products/${id}`, { method: 'DELETE', token })
-      setAdminProducts((prev) => prev.filter((product) => product.id !== id))
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'No fue posible eliminar el producto.')
     }
   }
 
@@ -3017,18 +3241,86 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
     setShowAddProduct(true)
   }
 
-  const saveUser = () => {
-    if (!newUser.name || !newUser.email) return
-    setUsers((prev) => [...prev, { id: Date.now(), ...newUser, createdAt: new Date().toISOString().split('T')[0] }])
-    setShowAddUser(false)
-    setNewUser({ name: '', email: '', role: 'editor' })
+  const saveUser = async () => {
+    try {
+      const user = await apiRequest<AdminUser>('/admin/users', {
+        method: 'POST',
+        token,
+        body: newUser,
+      })
+      setUsers((previous) => [user, ...previous])
+      setShowAddUser(false)
+      setNewUser({ name: '', email: '', password: '' })
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No fue posible crear el usuario.')
+    }
   }
 
-  const saveOffer = () => {
-    if (!newOffer.title || !newOffer.discount || !newOffer.code) return
-    setOffers((prev) => [...prev, { id: Date.now(), title: newOffer.title, discount: Number(newOffer.discount), code: newOffer.code, validUntil: newOffer.validUntil, active: true }])
-    setShowAddOffer(false)
-    setNewOffer({ title: '', discount: '', code: '', validUntil: '' })
+  const setAdminUserActive = async (user: AdminUser, active: boolean) => {
+    try {
+      await apiRequest(`/admin/users/${user.id}/active`, { method: 'PATCH', token, body: { active } })
+      setUsers((previous) => previous.map((item) => item.id === user.id ? { ...item, active } : item))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No fue posible actualizar el usuario.')
+    }
+  }
+
+  const setClientActive = async (client: AdminClient, active: boolean) => {
+    try {
+      await apiRequest(`/admin/clients/${client.id}/active`, { method: 'PATCH', token, body: { active } })
+      setClients((previous) => previous.map((item) => item.id === client.id ? { ...item, active } : item))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No fue posible actualizar el cliente.')
+    }
+  }
+
+  const saveClient = async () => {
+    if (!newClient.termsAccepted) return window.alert('Debes confirmar la aceptación de términos y privacidad.')
+    try {
+      const client = await apiRequest<AdminClient>('/admin/clients', {
+        method: 'POST',
+        token,
+        body: newClient,
+      })
+      setClients((previous) => [client, ...previous])
+      setNewClient({ name: '', email: '', phone: '', password: '', termsAccepted: false })
+      setShowAddClient(false)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No fue posible registrar el cliente.')
+    }
+  }
+
+  const saveOffer = async () => {
+    try {
+      const offer = await apiRequest<AdminOffer>('/admin/offers', {
+        method: 'POST',
+        token,
+        body: { ...newOffer, discount: Number(newOffer.discount) },
+      })
+      setOffers((previous) => [offer, ...previous])
+      setShowAddOffer(false)
+      setNewOffer({ title: '', discount: '', code: '', validUntil: '' })
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No fue posible guardar la oferta.')
+    }
+  }
+
+  const setOfferActive = async (offer: AdminOffer, active: boolean) => {
+    try {
+      await apiRequest(`/admin/offers/${offer.id}/active`, { method: 'PATCH', token, body: { active } })
+      setOffers((previous) => previous.map((item) => item.id === offer.id ? { ...item, active } : item))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No fue posible actualizar la oferta.')
+    }
+  }
+
+  const setReviewActive = async (review: AdminReview, active: boolean) => {
+    try {
+      await apiRequest(`/admin/reviews/${review.id}/approval`, { method: 'PATCH', token, body: { approved: active } })
+      setAdminReviews((previous) => previous.map((item) => item.id === review.id ? { ...item, approved: active } : item))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No fue posible actualizar la reseña.')
+    }
   }
 
   const saveQuickSale = () => {
@@ -3055,17 +3347,56 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
     setAdminSectionKey(k => k + 1)
   }
 
-  const totalRevenue = INIT_CLIENTS.reduce((s, c) => s + c.totalSpent, 0)
-  const [showImgModal, setShowImgModal] = useState(false)
+  const exportClientXlsx = () => downloadXlsx([
+    ['Cliente', 'Correo', 'Teléfono', 'Pedidos', 'Total gastado (COP)', 'Último pedido'],
+    ...clients.map((client) => [client.name, client.email, client.phone, client.orders, client.totalSpent, client.lastOrder ?? '']),
+  ], 'informe-clientes')
 
-  const exportCSV = (data: {name:string;orders:number;totalSpent:number}[], filename: string) => {
-    const header = 'Cliente,Pedidos,Total\n'
-    const rows = data.map(r => `${r.name},${r.orders},${r.totalSpent}`).join('\n')
-    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = filename + '.csv'; a.click()
-    URL.revokeObjectURL(url)
+  const orderReportHeaders = ['Fecha', 'Pedido', 'Cliente', 'Correo', 'Productos', 'Ciudad', 'Método de pago', 'Total (COP)']
+  const orderReportRows = orders.map((order) => [
+    order.date, order.id, order.client, order.email, order.product, order.city, order.payMethod, order.total,
+  ])
+  const salesOrders = orders.filter((order) => (orderStatuses[order.id] ?? order.status) !== 'cancelado')
+  const salesReportRows = salesOrders.map((order) => [
+    order.date, order.id, order.client, order.email, order.product, order.city, order.payMethod, order.total,
+  ])
+  const salesRevenue = salesOrders.reduce((total, order) => total + order.total, 0)
+  const reportPdf = (title: string, headers: string[], rows: (string | number)[][]) => {
+    const reportWindow = window.open('', '_blank')
+    if (!reportWindow) {
+      window.alert('Permite las ventanas emergentes para imprimir el informe como PDF.')
+      return
+    }
+    const escapeHtml = (value: string | number) => String(value).replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[character]!)
+    const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')
+    const body = rows.map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join('')}</tr>`).join('')
+    reportWindow.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;margin:32px;color:#000}h1{color:#000}p{color:#000}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border:1px solid #bbb;color:#000}th{background:#f4f4f5;color:#000}@media print{body{margin:12mm}}</style></head><body><h1>${escapeHtml(title)}</h1><p>BS Bike Store · ${new Date().toLocaleDateString('es-CO')}</p><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`)
+    reportWindow.document.close()
   }
+  const exportClientPdf = () => reportPdf(
+    'Informe de clientes',
+    ['Cliente', 'Correo', 'Teléfono', 'Pedidos', 'Total gastado (COP)', 'Último pedido'],
+    clients.map((client) => [client.name, client.email, client.phone, client.orders, client.totalSpent, client.lastOrder ?? '']),
+  )
+  const exportSalesXlsx = () => downloadXlsx([
+    ['Fecha', 'Pedido', 'Cliente', 'Correo', 'Productos', 'Ciudad', 'Método de pago', 'Total (COP)'],
+    ...salesReportRows,
+    [],
+    ['Ventas totales (COP)', salesRevenue],
+    ['Pedidos incluidos', salesOrders.length],
+  ], 'informe-ventas')
+  const exportSalesPdf = () => reportPdf(
+    'Informe de ventas y pedidos',
+    orderReportHeaders,
+    [...salesReportRows, ['', '', '', '', '', '', 'Ventas totales (COP)', salesRevenue]],
+  )
+  const exportOrdersXlsx = () => downloadXlsx([
+    orderReportHeaders,
+    ...orderReportRows,
+  ], 'informe-pedidos')
+  const exportOrdersPdf = () => reportPdf('Informe de pedidos', orderReportHeaders, orderReportRows)
   const filteredClients = clients.filter((c) =>
     c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
     c.email.toLowerCase().includes(clientSearch.toLowerCase())
@@ -3076,7 +3407,18 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
   const btnOutline = 'border border-gray-200 hover:border-[#0D5C3A] text-gray-600 hover:text-[#0D5C3A] font-semibold px-4 py-2 rounded-xl text-sm transition-colors'
 
   return (
-    <div className="fixed inset-0 z-[100] flex bg-[#F4F4F5]">
+    <div data-admin-theme={adminDarkMode ? 'dark' : 'light'} className="fixed inset-0 z-[100] flex bg-[#F4F4F5]">
+      <style>{`
+        [data-admin-theme="dark"]{color-scheme:dark;background:#111827;color:#e5e7eb}
+        [data-admin-theme="dark"] [class~="bg-white"],[data-admin-theme="dark"] [class~="bg-[#F4F4F5]"],[data-admin-theme="dark"] [class~="bg-gray-50"],[data-admin-theme="dark"] [class~="bg-gray-100"]{background-color:#1f2937!important}
+        [data-admin-theme="dark"] [class*="bg-[#F4F4F5]/"]{background-color:#273449!important}
+        [data-admin-theme="dark"] [class~="text-[#1A1A1A]"],[data-admin-theme="dark"] [class~="text-gray-700"]{color:#f3f4f6!important}
+        [data-admin-theme="dark"] [class~="text-gray-600"]{color:#d1d5db!important}
+        [data-admin-theme="dark"] [class~="text-gray-500"],[data-admin-theme="dark"] [class~="text-gray-400"]{color:#9ca3af!important}
+        [data-admin-theme="dark"] [class~="border-gray-100"],[data-admin-theme="dark"] [class~="border-gray-200"]{border-color:#374151!important}
+        [data-admin-theme="dark"] input,[data-admin-theme="dark"] select,[data-admin-theme="dark"] textarea{background-color:#111827;color:#f3f4f6;border-color:#4b5563}
+        [data-admin-theme="dark"] input::placeholder,[data-admin-theme="dark"] textarea::placeholder{color:#9ca3af}
+      `}</style>
       {/* Sidebar */}
       <aside className={`${sidebarOpen ? 'w-56' : 'w-16'} bg-[#1A1A1A] flex flex-col flex-shrink-0 transition-all duration-300 overflow-hidden`}>
         <div className="flex items-center justify-between px-4 py-5 border-b border-white/10">
@@ -3129,6 +3471,16 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
             {navItems.find((n) => n.id === section)?.label}
           </h1>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setAdminDarkMode((enabled) => !enabled)}
+              aria-label={adminDarkMode ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
+              title={adminDarkMode ? 'Modo claro' : 'Modo oscuro'}
+              className="flex items-center gap-2 border border-gray-200 px-3 py-2 rounded-xl text-xs font-bold text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <span aria-hidden="true">{adminDarkMode ? '☀️' : '🌙'}</span>
+              <span className="hidden sm:inline">{adminDarkMode ? 'Modo claro' : 'Modo oscuro'}</span>
+            </button>
             <button
               onClick={() => setShowQuickSale(true)}
               className="flex items-center gap-2 bg-[#0D5C3A] hover:bg-[#1A8A5A] text-white text-xs font-bold px-3 py-2 rounded-xl transition-colors"
@@ -3208,7 +3560,6 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                   { label: 'Pedidos Totales', value: orders.length, sub: `${orders.filter(o=>(orderStatuses[o.id]||o.status)==='entregado').length} entregados`, color: '#1A8A5A' },
                   { label: 'Pedidos Pendientes', value: orders.filter(o=>(orderStatuses[o.id]||o.status)==='pendiente'||(orderStatuses[o.id]||o.status)==='en_proceso').length, sub: 'por procesar', color: '#1A8A5A' },
                   { label: 'Clientes Activos', value: clients.length, sub: 'registrados', color: '#1A8A5A' },
-                  { label: 'Pagos Pendientes', value: paymentProofs.filter(p=>p.status==='Pendiente').length, sub: 'por validar', color: '#1A8A5A' },
                   { label: 'Productos Activos', value: adminProducts.filter(p=>p.active).length, sub: `de ${adminProducts.length} totales`, color: '#1A8A5A' },
                 ].map((stat) => (
                   <div key={stat.label} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 hover:scale-105 transition-transform duration-200 cursor-default">
@@ -3300,15 +3651,15 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-8 h-8 text-gray-400">
                           <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
                         </svg>
-                        {newProduct.imgPreview
-                          ? <img src={newProduct.imgPreview} alt="preview" className="h-16 w-16 object-cover rounded-lg" />
+                        {newProduct.imgPreview || editProduct?.img
+                          ? <img src={newProduct.imgPreview || editProduct?.img} alt="preview" className="h-16 w-16 object-contain rounded-lg" />
                           : <span className="text-sm text-gray-400">Subir foto (JPG, PNG, WebP)</span>}
                         <input type="file" accept="image/*" className="hidden" onChange={handleImgUpload} />
                       </label>
                     </div>
                   </div>
                   <div className="flex gap-3 mt-5">
-                    <button onClick={saveProduct} className={btnPrimary}>{editProduct ? 'Guardar cambios' : 'Crear producto'}</button>
+                    <button onClick={() => void saveProduct()} disabled={savingProduct} className={btnPrimary + ' disabled:opacity-50'}>{savingProduct ? 'Guardando…' : editProduct ? 'Guardar cambios' : 'Crear producto'}</button>
                     <button onClick={() => { setShowAddProduct(false); setEditProduct(null) }} className={btnOutline}>Cancelar</button>
                   </div>
                 </div>
@@ -3351,7 +3702,9 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                         <td className="px-4 py-3">
                           <div className="flex gap-2">
                             <button onClick={() => openEditProduct(p)} className="text-[#0D5C3A] hover:underline text-xs font-bold">Editar</button>
-                            <button onClick={() => void deleteProduct(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>
+                            <button onClick={() => void setProductActive(p.id, !p.active)} className="text-xs font-bold text-gray-600 hover:text-[#0D5C3A]">
+                              {p.active ? 'Deshabilitar' : 'Habilitar'}
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -3437,11 +3790,11 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Descuento (%)</label>
-                      <input className={inputCls} type="number" value={newOffer.discount} onChange={e=>setNewOffer(o=>({...o,discount:e.target.value}))} placeholder="15" />
+                      <input className={inputCls} type="number" min="1" max="100" value={newOffer.discount} onChange={e=>setNewOffer(o=>({...o,discount:e.target.value}))} placeholder="15" />
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Código</label>
-                      <input className={inputCls} value={newOffer.code} onChange={e=>setNewOffer(o=>({...o,code:e.target.value.toUpperCase()}))} placeholder="MTB15" />
+                      <input className={inputCls} maxLength={40} value={newOffer.code} onChange={e=>setNewOffer(o=>({...o,code:e.target.value.toUpperCase()}))} placeholder="MTB15" />
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Válido hasta</label>
@@ -3449,7 +3802,7 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                     </div>
                   </div>
                   <div className="flex gap-3 mt-4">
-                    <button onClick={saveOffer} className={btnPrimary}>Crear oferta</button>
+                    <button onClick={() => void saveOffer()} disabled={!newOffer.title.trim() || !newOffer.discount || Number(newOffer.discount) < 1 || Number(newOffer.discount) > 100 || !newOffer.code.trim()} className={btnPrimary + ' disabled:opacity-50'}>Crear oferta</button>
                     <button onClick={() => setShowAddOffer(false)} className={btnOutline}>Cancelar</button>
                   </div>
                 </div>
@@ -3470,7 +3823,7 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                     </div>
                     <div className="flex items-center justify-between">
                       <button
-                        onClick={() => setOffers(prev=>prev.map(x=>x.id===o.id?{...x,active:!x.active}:x))}
+                        onClick={() => void setOfferActive(o, !o.active)}
                         className={`flex items-center gap-2 text-xs font-bold ${o.active?'text-[#0D5C3A]':'text-gray-400'}`}
                       >
                         <div className={`w-8 h-4 rounded-full relative transition-colors ${o.active?'bg-[#0D5C3A]':'bg-gray-200'}`}>
@@ -3478,7 +3831,7 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                         </div>
                         {o.active ? 'Activa' : 'Inactiva'}
                       </button>
-                      <button onClick={() => setOffers(prev=>prev.filter(x=>x.id!==o.id))} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>
+                      <span className="text-xs text-gray-400">{o.active ? 'Oferta visible' : 'Oferta pausada'}</span>
                     </div>
                   </div>
                 ))}
@@ -3491,7 +3844,7 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
             <div>
               <div className="flex justify-between items-center mb-5">
                 <p className="text-sm text-gray-500">{users.length} usuarios del sistema</p>
-                <button onClick={() => setShowAddUser(true)} className={btnPrimary}>+ Crear usuario</button>
+                <button onClick={() => setShowAddUser(true)} className={btnPrimary}>+ Crear administrador</button>
               </div>
               {showAddUser && (
                 <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 mb-6">
@@ -3506,15 +3859,12 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                       <input className={inputCls} type="email" value={newUser.email} onChange={e=>setNewUser(u=>({...u,email:e.target.value}))} placeholder="correo@bsbikestore.com" />
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Rol</label>
-                      <select className={inputCls} value={newUser.role} onChange={e=>setNewUser(u=>({...u,role:e.target.value as 'admin'|'editor'}))}>
-                        <option value="admin">Administrador</option>
-                        <option value="editor">Editor</option>
-                      </select>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Contraseña inicial</label>
+                      <input className={inputCls} type="password" minLength={12} value={newUser.password} onChange={e=>setNewUser(u=>({...u,password:e.target.value}))} placeholder="Mínimo 12 caracteres" />
                     </div>
                   </div>
                   <div className="flex gap-3 mt-4">
-                    <button onClick={saveUser} className={btnPrimary}>Crear usuario</button>
+                    <button onClick={() => void saveUser()} disabled={!newUser.name.trim() || !newUser.email.trim() || newUser.password.length < 12} className={btnPrimary + ' disabled:opacity-50'}>Crear administrador</button>
                     <button onClick={() => setShowAddUser(false)} className={btnOutline}>Cancelar</button>
                   </div>
                 </div>
@@ -3540,12 +3890,15 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                         <td className="px-4 py-3 text-gray-500 text-xs">{u.email}</td>
                         <td className="px-4 py-3">
                           <span className={`text-xs font-bold px-2 py-1 rounded-full ${u.role==='admin'?'bg-[#0D5C3A]/10 text-[#0D5C3A]':'bg-gray-100 text-gray-600'}`}>
-                            {u.role === 'admin' ? 'Administrador' : 'Editor'}
+                            Administrador
                           </span>
                         </td>
                         <td className="px-4 py-3 text-gray-400 text-xs">{u.createdAt}</td>
                         <td className="px-4 py-3">
-                          <button onClick={() => setUsers(prev=>prev.filter(x=>x.id!==u.id))} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>
+                          <button
+                            onClick={() => void setAdminUserActive(u, !u.active)}
+                            className={`text-xs font-bold ${u.active ? 'text-[#0D5C3A]' : 'text-gray-400'}`}
+                          >{u.active ? 'Deshabilitar' : 'Habilitar'}</button>
                         </td>
                       </tr>
                     ))}
@@ -3564,12 +3917,32 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                   <input className={`${inputCls} pl-9`} placeholder="Buscar cliente..." value={clientSearch} onChange={e=>setClientSearch(e.target.value)} />
                 </div>
                 <p className="text-sm text-gray-500">{filteredClients.length} clientes</p>
+                <button onClick={() => setShowAddClient((visible) => !visible)} className={btnPrimary}>+ Registrar cliente</button>
               </div>
+              {showAddClient && (
+                <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 mb-5">
+                  <h3 className="font-black text-sm mb-4">Nuevo cliente</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <input className={inputCls} aria-label="Nombre del cliente" placeholder="Nombre completo" value={newClient.name} onChange={(event) => setNewClient((client) => ({ ...client, name: event.target.value }))} />
+                    <input className={inputCls} aria-label="Correo del cliente" type="email" placeholder="Correo electrónico" value={newClient.email} onChange={(event) => setNewClient((client) => ({ ...client, email: event.target.value }))} />
+                    <input className={inputCls} aria-label="Teléfono del cliente" type="tel" placeholder="Teléfono" value={newClient.phone} onChange={(event) => setNewClient((client) => ({ ...client, phone: event.target.value }))} />
+                    <input className={inputCls} aria-label="Contraseña inicial" type="password" minLength={10} placeholder="Contraseña inicial (mín. 10 caracteres)" value={newClient.password} onChange={(event) => setNewClient((client) => ({ ...client, password: event.target.value }))} />
+                  </div>
+                  <label className="flex items-start gap-2 text-xs text-gray-600 my-4">
+                    <input type="checkbox" checked={newClient.termsAccepted} onChange={(event) => setNewClient((client) => ({ ...client, termsAccepted: event.target.checked }))} className="mt-0.5 accent-[#0D5C3A]" />
+                    El cliente confirma la aceptación de los términos y la política de privacidad.
+                  </label>
+                  <div className="flex gap-2">
+                    <button onClick={() => void saveClient()} disabled={!newClient.name || !newClient.email || newClient.phone.replace(/\D/g, '').length < 7 || newClient.password.length < 10 || !newClient.termsAccepted} className={btnPrimary + ' disabled:opacity-50'}>Guardar cliente</button>
+                    <button onClick={() => setShowAddClient(false)} className={btnOutline}>Cancelar</button>
+                  </div>
+                </div>
+              )}
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-[#F4F4F5]">
                     <tr>
-                      {['Cliente','Contacto','Pedidos','Total gastado','Último pedido',''].map(h=>(
+                      {['Cliente','Contacto','Pedidos','Total gastado','Último pedido','Estado'].map(h=>(
                         <th key={h} className="text-left px-4 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
@@ -3589,12 +3962,13 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                         </td>
                         <td className="px-4 py-3 font-bold text-[#1A1A1A]">{c.orders}</td>
                         <td className="px-4 py-3 font-black text-[#0D5C3A] text-sm">${c.totalSpent.toLocaleString('es-CO')}</td>
-                        <td className="px-4 py-3 text-gray-400 text-xs">{c.lastOrder}</td>
+                        <td className="px-4 py-3 text-gray-400 text-xs">{c.lastOrder ?? '—'}</td>
                         <td className="px-4 py-3">
                           <button
-                            onClick={() => setClients(prev => prev.filter(x => x.id !== c.id))}
-                            className="text-red-500 hover:text-red-700 transition-colors text-xs font-bold"
-                          >Eliminar</button>
+                            onClick={() => void setClientActive(c, !c.active)}
+                            aria-label={`${c.active ? 'Deshabilitar' : 'Habilitar'} ${c.name}`}
+                            className={`px-3 py-1 rounded-full text-xs font-bold ${c.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}
+                          >{c.active ? 'Habilitado' : 'Deshabilitado'}</button>
                         </td>
                       </tr>
                     ))}
@@ -3607,69 +3981,50 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
           {/* ── REPORTES ── */}
           {section === 'reportes' && (
             <div className="space-y-6">
-              {/* Export buttons */}
               <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Exportar:</span>
+                <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Ventas:</span>
+                <button onClick={exportSalesPdf} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 text-black hover:bg-gray-50 transition-colors">📄 PDF</button>
+                <button onClick={exportSalesXlsx} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 text-black hover:bg-gray-50 transition-colors">📊 Excel (.xlsx)</button>
+                <span className="ml-2 text-xs font-bold text-gray-500 uppercase tracking-wider">Clientes:</span>
                 <button
-                  onClick={() => window.print()}
-                  className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
+                  onClick={exportClientPdf}
+                  className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 text-black hover:bg-gray-50 transition-colors"
                 >
                   📄 PDF
                 </button>
                 <button
-                  onClick={() => exportCSV([...clients].sort((a,b)=>b.totalSpent-a.totalSpent), 'top-clientes')}
-                  className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
+                  onClick={exportClientXlsx}
+                  className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 text-black hover:bg-gray-50 transition-colors"
                 >
-                  📊 Excel
-                </button>
-                <button
-                  onClick={() => setShowImgModal(true)}
-                  className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
-                >
-                  🖼️ Imagen
+                  📊 Excel (.xlsx)
                 </button>
               </div>
-              {showImgModal && (
-                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowImgModal(false)}>
-                  <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl text-center" onClick={e => e.stopPropagation()}>
-                    <div className="text-4xl mb-3">🖼️</div>
-                    <h3 className="font-black text-[#1A1A1A] mb-2">Guardar como imagen</h3>
-                    <p className="text-sm text-gray-500 mb-4">Para guardar el reporte como imagen, use la función de captura de pantalla de su navegador:<br /><strong>Ctrl+Shift+S</strong> en Chrome / Edge, o el menú de impresión y seleccione "Guardar como imagen".</p>
-                    <button onClick={() => setShowImgModal(false)} className="w-full bg-[#0D5C3A] text-white font-bold py-2.5 rounded-xl text-sm">Entendido</button>
-                  </div>
-                </div>
-              )}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                  <h3 className="font-black text-sm text-[#1A1A1A] mb-4 uppercase tracking-wide">Ventas por categoría</h3>
-                  <div className="space-y-3">
-                    {[
-                      { cat: 'Todo Terreno', pct: 52, color: '#0D5C3A' },
-                      { cat: 'Ruta', pct: 24, color: '#1A8A5A' },
-                      { cat: 'Eléctrica', pct: 16, color: '#2DB87A' },
-                      { cat: 'Infantil', pct: 8, color: '#7DD3B0' },
-                    ].map((r) => (
-                      <div key={r.cat}>
-                        <div className="flex justify-between text-xs mb-1">
-                          <span className="font-semibold text-[#1A1A1A]">{r.cat}</span>
-                          <span className="font-bold" style={{color:r.color}}>{r.pct}%</span>
+                  <h3 className="font-black text-sm text-[#1A1A1A] mb-4 uppercase tracking-wide">Ventas recientes</h3>
+                  {salesOrders.length ? (
+                    <div className="space-y-3">
+                      {salesOrders.slice(0, 6).map((order) => (
+                        <div key={order.id} className="flex items-center justify-between gap-3 border-b border-gray-100 pb-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-[#1A1A1A] truncate">{order.client}</p>
+                            <p className="text-[11px] text-gray-500 truncate">{order.product} · {order.date}</p>
+                          </div>
+                          <span className="text-xs font-black text-[#0D5C3A] whitespace-nowrap">${order.total.toLocaleString('es-CO')}</span>
                         </div>
-                        <div className="w-full bg-gray-100 rounded-full h-2">
-                          <div className="h-2 rounded-full transition-all" style={{width:`${r.pct}%`, backgroundColor:r.color}} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  ) : <p className="text-sm text-gray-500">Aún no hay ventas registradas.</p>}
                 </div>
 
                 <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
                   <h3 className="font-black text-sm text-[#1A1A1A] mb-4 uppercase tracking-wide">Resumen financiero</h3>
                   <div className="space-y-4">
                     {[
-                      { label: 'Ingresos totales', value: `$${(totalRevenue/1000000).toFixed(2)}M COP`, highlight: true },
-                      { label: 'Promedio por cliente', value: `$${(totalRevenue/clients.length/1000000).toFixed(2)}M COP`, highlight: false },
-                      { label: 'Pedidos totales', value: clients.reduce((s,c)=>s+c.orders,0), highlight: false },
-                      { label: 'Clientes activos', value: clients.length, highlight: false },
+                      { label: 'Ventas registradas', value: `$${salesRevenue.toLocaleString('es-CO')} COP`, highlight: true },
+                      { label: 'Promedio por pedido', value: `$${(salesOrders.length ? salesRevenue / salesOrders.length : 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP`, highlight: false },
+                      { label: 'Pedidos no cancelados', value: salesOrders.length, highlight: false },
+                      { label: 'Clientes activos', value: clients.filter((client) => client.active).length, highlight: false },
                     ].map((r) => (
                       <div key={r.label} className="flex justify-between items-center">
                         <span className="text-sm text-gray-500">{r.label}</span>
@@ -3708,69 +4063,16 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                 </div>
               </div>
 
-              {/* ── Comprobantes de pago ── */}
-              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-black text-sm text-[#1A1A1A] uppercase tracking-wide">Comprobantes de Pago</h3>
-                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-amber-100 text-amber-700">
-                    {paymentProofs.filter(p => p.status === 'Pendiente').length} pendientes
-                  </span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-[#F4F4F5]">
-                      <tr>
-                        {['# Orden','Cliente','Monto','Método','Fecha','Estado','Acciones'].map(h => (
-                          <th key={h} className="text-left px-4 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {paymentProofs.map(pp => (
-                        <tr key={pp.id} className="hover:bg-[#F4F4F5]/50 transition-colors">
-                          <td className="px-4 py-3 font-mono text-xs font-bold text-[#1A1A1A]">{pp.id}</td>
-                          <td className="px-4 py-3 text-sm text-[#1A1A1A] font-semibold">{pp.client}</td>
-                          <td className="px-4 py-3 text-sm font-black text-[#0D5C3A]">${pp.amount.toLocaleString('es-CO')}</td>
-                          <td className="px-4 py-3 text-xs text-gray-500">{pp.method}</td>
-                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{pp.date}</td>
-                          <td className="px-4 py-3">
-                            <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
-                              pp.status === 'Aprobado' ? 'bg-green-100 text-green-700' :
-                              pp.status === 'Rechazado' ? 'bg-red-100 text-red-600' :
-                              'bg-amber-100 text-amber-700'
-                            }`}>{pp.status}</span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => setPaymentProofs(prev => prev.map(x => x.id === pp.id ? {...x, status: 'Aprobado'} : x))}
-                                disabled={pp.status !== 'Pendiente'}
-                                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                              >Aprobar</button>
-                              <button
-                                onClick={() => setPaymentProofs(prev => prev.map(x => x.id === pp.id ? {...x, status: 'Rechazado'} : x))}
-                                disabled={pp.status !== 'Pendiente'}
-                                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                              >Rechazar</button>
-                              <button
-                                onClick={() => setPaymentProofs(prev => prev.filter(x => x.id !== pp.id))}
-                                className="text-xs font-bold px-3 py-1.5 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
-                              >Eliminar</button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
             </div>
           )}
 
           {/* ── PEDIDOS ── */}
           {section === 'pedidos' && (
             <div>
+              <div className="flex justify-end gap-2 mb-4">
+                <button onClick={exportOrdersPdf} className="px-3 py-2 rounded-lg border border-gray-200 text-black text-xs font-bold hover:bg-gray-50">📄 PDF pedidos</button>
+                <button onClick={exportOrdersXlsx} className="px-3 py-2 rounded-lg border border-gray-200 text-black text-xs font-bold hover:bg-gray-50">📊 Excel pedidos</button>
+              </div>
               {/* Edit order modal */}
               {editingOrder && editOrderDraft && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setEditingOrder(null)}>
@@ -3863,7 +4165,7 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                   <table className="w-full text-sm">
                     <thead className="bg-[#F4F4F5]">
                       <tr>
-                        {['#Pedido','Factura','Cliente','Producto','Total','Estado','Fecha','Acciones'].map(h=>(
+                        {['#Pedido','Factura','Cliente','Producto','Total','Fecha','Acciones'].map(h=>(
                           <th key={h} className="text-left px-4 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
@@ -3871,7 +4173,6 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                     <tbody className="divide-y divide-gray-100">
                       {orders.map(o => {
                         const st = orderStatuses[o.id] || o.status
-                        const badgeCls = st==='entregado' ? 'bg-green-100 text-green-700' : st==='en_proceso' || st==='enviado' ? 'bg-blue-100 text-blue-700' : st==='pendiente' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-600'
                         return (
                           <tr key={o.id} className="hover:bg-[#F4F4F5]/50 transition-colors">
                             <td className="px-4 py-3 font-mono text-xs font-bold text-[#1A1A1A]">{o.id}</td>
@@ -3882,11 +4183,6 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                             </td>
                             <td className="px-4 py-3 text-xs text-gray-600 max-w-[140px] truncate">{o.product}</td>
                             <td className="px-4 py-3 font-black text-xs text-[#0D5C3A] whitespace-nowrap">${o.total.toLocaleString('es-CO')}</td>
-                            <td className="px-4 py-3">
-                              <span className={`text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap ${badgeCls}`}>
-                                {st==='entregado'?'Entregado':st==='enviado'?'Enviado':st==='en_proceso'?'En proceso':st==='pendiente'?'Pendiente':'Cancelado'}
-                              </span>
-                            </td>
                             <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{o.date}</td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
@@ -3920,7 +4216,7 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
           {/* ── RESEÑAS ── */}
           {section === 'resenas' && (
             <div>
-              <p className="text-sm text-gray-500 mb-5">{REVIEWS.length - deletedReviews.size} reseñas de clientes</p>
+              <p className="text-sm text-gray-500 mb-5">{adminReviews.length} reseñas de clientes</p>
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -3932,49 +4228,36 @@ function AdminPanel({ onClose, token }: { onClose: () => void; token: string }) 
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {REVIEWS.map((r, i) => {
-                        if (deletedReviews.has(i)) return null
-                        const rs = reviewStatuses[i] || 'Pendiente'
-                        const badgeCls = rs==='Aprobado' ? 'bg-green-100 text-green-700' : rs==='Rechazado' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-700'
+                      {adminReviews.map((review) => {
+                        const active = review.approved
+                        const reviewDate = new Date(review.createdAt).toLocaleDateString()
                         return (
-                          <tr key={i} className="hover:bg-[#F4F4F5]/50 transition-colors">
+                          <tr key={review.id} className="hover:bg-[#F4F4F5]/50 transition-colors">
                             <td className="px-4 py-3">
-                              <p className="font-semibold text-xs text-[#1A1A1A]">{r.name}</p>
-                              <p className="text-[10px] text-[#0D5C3A] font-bold">{r.bike}</p>
+                              <p className="font-semibold text-xs text-[#1A1A1A]">{review.author}</p>
+                              <p className="text-[10px] text-[#0D5C3A] font-bold">{review.productName}</p>
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-0.5">
                                 {[1,2,3,4,5].map(s=>(
-                                  <svg key={s} className={`w-3 h-3 ${s<=r.rating?'fill-[#0D5C3A] text-[#0D5C3A]':'fill-gray-200 text-gray-200'}`} viewBox="0 0 20 20">
+                                  <svg key={s} className={`w-3 h-3 ${s<=review.rating?'fill-[#0D5C3A] text-[#0D5C3A]':'fill-gray-200 text-gray-200'}`} viewBox="0 0 20 20">
                                     <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
                                   </svg>
                                 ))}
                               </div>
                             </td>
                             <td className="px-4 py-3 text-xs text-gray-600 max-w-[200px]">
-                              <p className="truncate">{r.comment}</p>
+                              <p className="truncate">{review.comment}</p>
                             </td>
-                            <td className="px-4 py-3 text-xs text-gray-400">{r.date}</td>
+                            <td className="px-4 py-3 text-xs text-gray-400">{reviewDate}</td>
                             <td className="px-4 py-3">
-                              <span className={`text-xs font-bold px-2 py-1 rounded-full ${badgeCls}`}>{rs}</span>
+                              <span className={`text-xs font-bold px-2 py-1 rounded-full ${active ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>{active ? 'Activa' : 'Inactiva'}</span>
                             </td>
                             <td className="px-4 py-3">
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => setReviewStatuses(prev=>({...prev,[i]:'Aprobado'}))}
-                                  disabled={rs!=='Pendiente'}
-                                  className="text-xs font-bold px-2.5 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                >Aprobar</button>
-                                <button
-                                  onClick={() => setReviewStatuses(prev=>({...prev,[i]:'Rechazado'}))}
-                                  disabled={rs!=='Pendiente'}
-                                  className="text-xs font-bold px-2.5 py-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                >Rechazar</button>
-                                <button
-                                  onClick={() => setDeletedReviews(prev => new Set([...prev, i]))}
-                                  className="text-xs font-bold px-2.5 py-1.5 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
-                                >Eliminar</button>
-                              </div>
+                              <button
+                                onClick={() => void setReviewActive(review, !active)}
+                                className={`text-xs font-bold px-2.5 py-1.5 rounded-lg border transition-colors ${active ? 'border-gray-200 text-gray-600' : 'border-green-200 text-green-700'}`}
+                              >{active ? 'Deshabilitar' : 'Habilitar'}</button>
                             </td>
                           </tr>
                         )
@@ -4001,8 +4284,6 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
-  const [email, setEmail] = useState('')
-  const [emailSubmitted, setEmailSubmitted] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
   const [wishlistOpen, setWishlistOpen] = useState(false)
   const [cartItems, setCartItems] = useState<CartItem[]>([])
@@ -4021,6 +4302,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [authToken, setAuthToken] = useState(() => window.sessionStorage.getItem(AUTH_TOKEN_KEY) ?? '')
   const [authModalOpen, setAuthModalOpen] = useState(false)
+  const [ordersModalOpen, setOrdersModalOpen] = useState(false)
   const [checkoutAfterAuth, setCheckoutAfterAuth] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
@@ -4061,7 +4343,7 @@ export default function App() {
           } as Product
         }))
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'No fue posible cargar el catálogo desde el servidor.'))
   }, [adminOpen])
 
   useEffect(() => {
@@ -4101,6 +4383,7 @@ export default function App() {
       if (existing) return prev.map((i) => (i.id === product.id ? { ...i, qty: i.qty + 1 } : i))
       return [...prev, { id: product.id, name: product.name, price: product.price, priceLabel: product.priceLabel, img: product.img, qty: 1 }]
     })
+    playCartAddedSound()
     setAddedId(product.id)
     setTimeout(() => setAddedId(null), 1500)
   }
@@ -4261,7 +4544,7 @@ export default function App() {
                           </span>
                         </div>
                         {currentUser.role === 'client' && (
-                          <button onClick={() => { setUserMenuOpen(false); scrollTo('productos') }} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-[#F4F4F5] transition-colors">
+                          <button onClick={() => { setUserMenuOpen(false); setOrdersModalOpen(true) }} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-[#F4F4F5] transition-colors">
                             Mis pedidos
                           </button>
                         )}
@@ -4547,7 +4830,7 @@ export default function App() {
               {filteredProducts.map((p) => (
                 <div key={p.id} className="bg-white rounded-2xl overflow-hidden group hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 ease-out flex flex-col shadow-sm">
                   <div
-                    className={`relative overflow-hidden cursor-zoom-in rounded-t-2xl ${p.id === 8 ? 'isolate' : ''} ${
+                    className={`relative overflow-hidden cursor-zoom-in rounded-t-2xl ${
                       WHITE_GRID_IMAGE_PRODUCT_IDS.has(p.id)
                         ? 'grid place-items-center bg-(--color-white)'
                         : 'flex items-center justify-center card-img-bg'
@@ -4555,13 +4838,11 @@ export default function App() {
                     style={{ minHeight: '184px' }}
                     onClick={() => setSelectedProduct(p)}
                   >
-                    {p.id !== 8 && (
-                      <img
-                        src={p.img}
-                        alt={p.name}
-                        className={`absolute inset-0 ${p.id === 7 ? 'w-[374px] max-w-none' : 'w-full'} h-full object-cover transition-all duration-500 group-hover:scale-105 group-hover:brightness-110 img-product`}
-                      />
-                    )}
+                    <img
+                      src={p.img}
+                      alt={p.name}
+                      className="absolute inset-0 w-full h-full object-contain object-center p-3 transition-all duration-500 group-hover:scale-105 img-product"
+                    />
                     <div className="absolute inset-0 bg-transparent transition-colors duration-200 flex items-center justify-center">
                       <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-white/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 text-xs font-bold text-[#0D5C3A]">
                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
@@ -4594,13 +4875,6 @@ export default function App() {
                         <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
                       </svg>
                     </button>
-                    {p.id === 8 && (
-                      <img
-                        src={p.img}
-                        alt={p.name}
-                        className="absolute inset-0 -z-10 w-full h-full object-cover transition-all duration-500 group-hover:scale-105 group-hover:brightness-110 img-product"
-                      />
-                    )}
                   </div>
 
                   <div className="px-4 pb-4 pt-2 flex flex-col flex-1">
@@ -4780,49 +5054,6 @@ export default function App() {
         </div>
       </section>
 
-      {/* ─── NEWSLETTER ─────────────────────────────────────────────────── */}
-      <section className="py-20 bg-[#F4F4F5]">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <span className="text-[#0D5C3A] text-xs font-bold tracking-[0.2em] uppercase block mb-3">Newsletter</span>
-          <h2 className="text-3xl lg:text-4xl font-black text-[#1A1A1A] mb-4" style={{ fontFamily: 'Montserrat, sans-serif' }}>
-            Recibe ofertas exclusivas y novedades de BS Bike Store
-          </h2>
-          <p className="text-gray-500 mb-8 text-sm">Suscríbete y sé el primero en conocer nuevos modelos, descuentos y eventos ciclistas.</p>
-
-          {emailSubmitted ? (
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-14 h-14 bg-[#0D5C3A]/10 rounded-full flex items-center justify-center">
-                <svg className="w-7 h-7 text-[#0D5C3A]" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                  <path d="M20 6 9 17l-5-5" />
-                </svg>
-              </div>
-              <p className="font-black text-[#1A1A1A] text-lg" style={{ fontFamily: 'Montserrat, sans-serif' }}>¡Gracias por suscribirte!</p>
-              <p className="text-gray-500 text-sm">Revisa tu correo para confirmar tu suscripción.</p>
-            </div>
-          ) : (
-            <form
-              className="flex flex-col sm:flex-row gap-3 max-w-md mx-auto"
-              onSubmit={(e) => { e.preventDefault(); setEmailSubmitted(true) }}
-            >
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Ingresa tu correo electrónico"
-                required
-                className="flex-1 px-5 py-3.5 rounded-full border border-gray-200 bg-white text-sm outline-none focus:border-[#0D5C3A] transition-colors"
-              />
-              <button
-                type="submit"
-                className="bg-[#0D5C3A] hover:bg-[#1A8A5A] text-white font-bold px-8 py-3.5 rounded-full text-sm tracking-wide transition-colors whitespace-nowrap"
-              >
-                Suscribirme
-              </button>
-            </form>
-          )}
-        </div>
-      </section>
-
       {/* ─── FOOTER ─────────────────────────────────────────────────────── */}
       <footer className="bg-[#1A1A1A] text-gray-400 pt-16 pb-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -4921,8 +5152,10 @@ export default function App() {
             setCheckoutAfterAuth(false)
           }}
           onLogin={handleAuthSuccess}
+          onOpenLegal={setLegalModal}
         />
       )}
+      {ordersModalOpen && authToken && <MyOrdersModal token={authToken} onClose={() => setOrdersModalOpen(false)} />}
       {adminLoginOpen && !adminOpen && (
         <AdminLoginPage
           onSuccess={handleAdminLoginSuccess}

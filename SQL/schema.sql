@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(190) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
   role ENUM('client', 'admin') NOT NULL DEFAULT 'client',
+  phone VARCHAR(30) NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  terms_accepted_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -92,4 +95,16 @@ CREATE TABLE IF NOT EXISTS reviews (
   CONSTRAINT fk_reviews_user FOREIGN KEY (user_id) REFERENCES users(id),
   UNIQUE KEY uq_reviews_user_product (user_id, product_id),
   INDEX idx_reviews_public (product_id, approved, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS offers (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(120) NOT NULL,
+  discount TINYINT UNSIGNED NOT NULL,
+  code VARCHAR(40) NOT NULL UNIQUE,
+  valid_until DATE NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_offers_discount CHECK (discount BETWEEN 1 AND 100),
+  INDEX idx_offers_active (active, valid_until)
 );

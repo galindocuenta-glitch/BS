@@ -23,6 +23,7 @@ const registerSchema = z.object({
   name: z.string().trim().min(2).max(120),
   email: z.string().trim().email().max(190),
   password: z.string().min(10).max(72),
+  termsAccepted: z.literal(true, { error: 'Debes aceptar los términos y la política de privacidad.' }),
 })
 
 const productSchema = z.object({
@@ -40,6 +41,7 @@ const productSchema = z.object({
 
 const orderSchema = z.object({
   items: z.array(z.object({ productId: z.number().int().positive(), quantity: z.number().int().min(1).max(20) })).min(1).max(50),
+  paymentMethod: z.literal('cash').default('cash'),
   paymentPoint: z.enum(['efecty', 'baloto', 'superpagos', 'tienda']).default('efecty'),
   shipping: z.object({
     name: z.string().trim().min(2).max(120),
@@ -68,7 +70,7 @@ router.post('/auth/register', loginLimiter, asyncRoute(async (req, res) => {
   const input = registerSchema.parse(req.body)
   const passwordHash = await bcrypt.hash(input.password, 12)
   const [result] = await pool.execute<ResultSetHeader>(
-    'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)',
+    'INSERT INTO users (name, email, password_hash, terms_accepted_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
     [input.name, input.email.toLowerCase(), passwordHash],
   )
   const user: AuthUser = { id: result.insertId, name: input.name, email: input.email.toLowerCase(), role: 'client' }
@@ -77,19 +79,154 @@ router.post('/auth/register', loginLimiter, asyncRoute(async (req, res) => {
 
 router.post('/auth/login', loginLimiter, asyncRoute(async (req, res) => {
   const input = z.object({ email: z.string().email(), password: z.string().min(1).max(72) }).parse(req.body)
-  const [rows] = await pool.execute<(RowDataPacket & { id: number; name: string; email: string; role: AuthUser['role']; password_hash: string })[]>(
-    'SELECT id, name, email, role, password_hash FROM users WHERE email = ? LIMIT 1',
+  const [rows] = await pool.execute<(RowDataPacket & { id: number; name: string; email: string; role: AuthUser['role']; password_hash: string; active: boolean })[]>(
+    'SELECT id, name, email, role, password_hash, active FROM users WHERE email = ? LIMIT 1',
     [input.email.toLowerCase()],
   )
   const account = rows[0]
   if (!account || !(await bcrypt.compare(input.password, account.password_hash))) {
     throw new HttpError(401, 'Correo o contraseña incorrectos.')
   }
+  if (!account.active) throw new HttpError(403, 'Esta cuenta está deshabilitada.')
   const user: AuthUser = { id: account.id, name: account.name, email: account.email, role: account.role }
   res.json({ user, token: createToken(user) })
 }))
 
 router.get('/auth/me', requireAuth, (req, res) => res.json({ user: req.user }))
+
+router.get('/admin/users', requireAuth, requireAdmin, asyncRoute(async (_req, res) => {
+  const [users] = await pool.execute<RowDataPacket[]>(
+    "SELECT id, name, email, role, DATE_FORMAT(created_at, '%Y-%m-%d') AS createdAt, active FROM users WHERE role = 'admin' ORDER BY created_at DESC LIMIT 200",
+  )
+  res.json({ items: users })
+}))
+
+router.post('/admin/users', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const input = z.object({
+    name: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().max(190),
+    password: z.string().min(12).max(72),
+  }).parse(req.body)
+  const passwordHash = await bcrypt.hash(input.password, 12)
+  const [result] = await pool.execute<ResultSetHeader>(
+    "INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'admin')",
+    [input.name, input.email.toLowerCase(), passwordHash],
+  )
+  res.status(201).json({
+    id: result.insertId,
+    name: input.name,
+    email: input.email.toLowerCase(),
+    role: 'admin',
+    createdAt: new Date().toISOString().slice(0, 10),
+    active: true,
+  })
+}))
+
+router.patch('/admin/users/:id/active', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const id = z.coerce.number().int().positive().parse(req.params.id)
+  const { active } = z.object({ active: z.boolean() }).parse(req.body)
+  if (!active && id === req.user!.id) throw new HttpError(409, 'No puedes deshabilitar tu propia cuenta.')
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    if (!active) {
+      const [admins] = await connection.execute<(RowDataPacket & { id: number })[]>(
+        "SELECT id FROM users WHERE role = 'admin' AND active = 1 FOR UPDATE",
+      )
+      if (admins.length <= 1) throw new HttpError(409, 'Debe permanecer al menos un administrador habilitado.')
+    }
+    const [result] = await connection.execute<ResultSetHeader>(
+      "UPDATE users SET active = ? WHERE id = ? AND role = 'admin'",
+      [active, id],
+    )
+    if (!result.affectedRows) throw new HttpError(404, 'No encontramos ese usuario.')
+    await connection.commit()
+    res.json({ id, active })
+  } catch (error) {
+    await connection.rollback()
+    throw error
+  } finally {
+    connection.release()
+  }
+}))
+
+router.get('/admin/clients', requireAuth, requireAdmin, asyncRoute(async (_req, res) => {
+  const [clients] = await pool.execute<RowDataPacket[]>(
+    `SELECT u.id, u.name, u.email, COALESCE(u.phone, '') AS phone, u.active,
+      COUNT(o.id) AS orders, COALESCE(SUM(o.total), 0) AS totalSpent,
+      MAX(o.created_at) AS lastOrder
+     FROM users u LEFT JOIN orders o ON o.user_id = u.id
+     WHERE u.role = 'client'
+     GROUP BY u.id, u.name, u.email, u.phone, u.active
+     ORDER BY u.created_at DESC LIMIT 500`,
+  )
+  res.json({ items: clients })
+}))
+
+router.post('/admin/clients', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const client = z.object({
+    name: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().max(190),
+    password: z.string().min(10).max(72),
+    phone: z.string().trim().min(7).max(30),
+    termsAccepted: z.literal(true, { error: 'Debes registrar la aceptación de términos y privacidad.' }),
+  }).parse(req.body)
+  const passwordHash = await bcrypt.hash(client.password, 12)
+  const [result] = await pool.execute<ResultSetHeader>(
+    'INSERT INTO users (name, email, password_hash, phone, terms_accepted_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
+    [client.name, client.email.toLowerCase(), passwordHash, client.phone],
+  )
+  res.status(201).json({
+    id: result.insertId,
+    name: client.name,
+    email: client.email.toLowerCase(),
+    phone: client.phone,
+    active: true,
+    orders: 0,
+    totalSpent: 0,
+    lastOrder: null,
+  })
+}))
+
+router.patch('/admin/clients/:id/active', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const id = z.coerce.number().int().positive().parse(req.params.id)
+  const { active } = z.object({ active: z.boolean() }).parse(req.body)
+  const [result] = await pool.execute<ResultSetHeader>(
+    "UPDATE users SET active = ? WHERE id = ? AND role = 'client'",
+    [active, id],
+  )
+  if (!result.affectedRows) throw new HttpError(404, 'No encontramos ese cliente.')
+  res.json({ id, active })
+}))
+
+router.get('/admin/offers', requireAuth, requireAdmin, asyncRoute(async (_req, res) => {
+  const [offers] = await pool.execute<RowDataPacket[]>(
+    "SELECT id, title, discount, code, DATE_FORMAT(valid_until, '%Y-%m-%d') AS validUntil, active FROM offers ORDER BY created_at DESC LIMIT 200",
+  )
+  res.json({ items: offers })
+}))
+
+router.post('/admin/offers', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const offer = z.object({
+    title: z.string().trim().min(2).max(120),
+    discount: z.number().int().min(1).max(100),
+    code: z.string().trim().min(2).max(40).transform((code) => code.toUpperCase()),
+    validUntil: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.literal('')]).optional(),
+  }).parse(req.body)
+  const [result] = await pool.execute<ResultSetHeader>(
+    'INSERT INTO offers (title, discount, code, valid_until) VALUES (?, ?, ?, ?)',
+    [offer.title, offer.discount, offer.code, offer.validUntil || null],
+  )
+  res.status(201).json({ id: result.insertId, ...offer, validUntil: offer.validUntil || '', active: true })
+}))
+
+router.patch('/admin/offers/:id/active', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const id = z.coerce.number().int().positive().parse(req.params.id)
+  const { active } = z.object({ active: z.boolean() }).parse(req.body)
+  const [result] = await pool.execute<ResultSetHeader>('UPDATE offers SET active = ? WHERE id = ?', [active, id])
+  if (!result.affectedRows) throw new HttpError(404, 'No encontramos esa oferta.')
+  res.json({ id, active })
+}))
 
 router.get('/products', asyncRoute(async (req, res) => {
   const querySchema = z.object({
@@ -225,7 +362,7 @@ router.post('/orders', requireAuth, asyncRoute(async (req, res) => {
     }
     await connection.execute(
       'INSERT INTO invoices (order_id, invoice_number, subtotal, tax_rate, tax_amount, total, payment_method, payment_point, payment_status, billing_name, billing_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [orderResult.insertId, invoiceNumber, subtotal, taxRate, taxAmount, total, 'cash', input.paymentPoint, 'pending', req.user!.name, req.user!.email],
+      [orderResult.insertId, invoiceNumber, subtotal, taxRate, taxAmount, total, input.paymentMethod, input.paymentPoint, 'pending', req.user!.name, req.user!.email],
     )
     await connection.commit()
     res.status(201).json({
@@ -256,7 +393,17 @@ router.post('/orders', requireAuth, asyncRoute(async (req, res) => {
 
 router.get('/orders/mine', requireAuth, asyncRoute(async (req, res) => {
   const [orders] = await pool.execute<RowDataPacket[]>(
-    'SELECT id, status, total, created_at AS createdAt FROM orders WHERE user_id = ? ORDER BY created_at DESC',
+    `SELECT o.id, o.status, o.total, o.created_at AS createdAt,
+      i.invoice_number AS invoiceNumber, i.subtotal, i.tax_rate AS taxRate,
+      i.tax_amount AS taxAmount, i.payment_method AS paymentMethod,
+      i.payment_point AS paymentPoint, i.payment_status AS paymentStatus,
+      i.issued_at AS issuedAt,
+      COALESCE((SELECT JSON_ARRAYAGG(JSON_OBJECT(
+        'productId', oi.product_id, 'name', oi.product_name,
+        'unitPrice', oi.unit_price, 'quantity', oi.quantity
+      )) FROM order_items oi WHERE oi.order_id = o.id), JSON_ARRAY()) AS items
+     FROM orders o LEFT JOIN invoices i ON i.order_id = o.id
+     WHERE o.user_id = ? ORDER BY o.created_at DESC`,
     [req.user!.id],
   )
   res.json(orders)
